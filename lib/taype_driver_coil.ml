@@ -2,47 +2,49 @@ open Taype_driver
 open Containers
 
 type var = In of int | Var of int
+type bexp = Eq of var * var | Lt of var * var
 
-type ast =
+type aexp =
   | Enc of int
-  | Mux of var * var * var
+  | Mux of bexp * var * var
   | Add of var * var
   | Sub of var * var
   | Mul of var * var
-  | Div of var * var
-  | Eq of var * var
-  | Le of var * var
-  | And of var * var
-  | Or of var * var
-  | Not of var
 
 let in_c = ref 0
 let var_c = ref 0
-let ctx : ast list ref = ref []
+let ctx : (int, aexp) List.Assoc.t ref = ref []
 
-let make_var () =
+let init () =
+  in_c := 0;
+  var_c := 2;
+  ctx := [ (1, Enc 1); (0, Enc 0) ]
+
+let zero = Var 0
+let one = Var 1
+
+let mk_var () =
   let v = !var_c in
   var_c := v + 1;
   v
 
-let make_in () =
+let mk_in () =
   let v = !in_c in
   in_c := v + 1;
   v
 
 let extend_ctx x =
-  let v = make_var () in
-  ctx := x :: !ctx;
+  let v = mk_var () in
+  ctx := (v, x) :: !ctx;
   Var v
+
+let ite s m n = Mux (Lt (zero, s), m, n) |> extend_ctx
 
 module OInt = struct
   type t = var
 
   let setup_driver _ _ _ = function
-    | Party.Public ->
-        in_c := 0;
-        var_c := 0;
-        ctx := []
+    | Party.Public -> init ()
     | Party.Trusted -> raise Unsupported
     | Party.Private _ -> raise Unknown_party
 
@@ -56,54 +58,63 @@ module OInt = struct
 
   let arbitrary = function
     | Party.Public -> Enc 0 |> extend_ctx
-    | Party.Trusted -> In (make_in ())
+    | Party.Trusted -> In (mk_in ())
     | Party.Private _ -> raise Unsupported
 
   let reveal_int _ = raise Unsupported
-  let mux s m n = Mux (s, m, n) |> extend_ctx
+  let mux s m n = ite s m n
   let add m n = Add (m, n) |> extend_ctx
   let sub m n = Sub (m, n) |> extend_ctx
   let mul m n = Mul (m, n) |> extend_ctx
-  let div m n = Div (m, n) |> extend_ctx
-  let eq m n = Eq (m, n) |> extend_ctx
-  let le m n = Le (m, n) |> extend_ctx
-  let band m n = And (m, n) |> extend_ctx
-  let bor m n = Or (m, n) |> extend_ctx
-  let bnot n = Not n |> extend_ctx
+  let div _ _ = raise Unsupported
+  let eq m n = Mux (Eq (m, n), one, zero) |> extend_ctx
+  let le m n = Mux (Lt (n, m), zero, one) |> extend_ctx
+  let band m n = mul m n
+  let bor m n = ite (add m n) one zero
+  let bnot n = ite n zero one
 end
 
 module Driver = Make (OInt)
 
-let string_of_var = function
-  | In x -> "i" ^ string_of_int x
-  | Var x -> "x" ^ string_of_int x
+let pp_let pp_var pp_exp =
+  Format.dprintf "@[<hv>let %t =@;<1 2>%t@ in@]" pp_var pp_exp
 
-let sexp_of_var v = Sexp.atom (string_of_var v)
-let sexp_of_vars = List.map sexp_of_var
+let pp_var = function
+  | In n -> Format.dprintf "i%d" n
+  | Var n -> Format.dprintf "x%d" n
 
-let sexp_of_ast : ast -> Sexp.t = function
-  | Enc n -> Sexp.of_variant "enc" [ Sexp.of_int n ]
-  | Mux (s, m, n) -> Sexp.of_variant "mux" (sexp_of_vars [ s; m; n ])
-  | Add (m, n) -> Sexp.of_variant "+" (sexp_of_vars [ m; n ])
-  | Sub (m, n) -> Sexp.of_variant "-" (sexp_of_vars [ m; n ])
-  | Mul (m, n) -> Sexp.of_variant "*" (sexp_of_vars [ m; n ])
-  | Div (m, n) -> Sexp.of_variant "/" (sexp_of_vars [ m; n ])
-  | Eq (m, n) -> Sexp.of_variant "=" (sexp_of_vars [ m; n ])
-  | Le (m, n) -> Sexp.of_variant "<=" (sexp_of_vars [ m; n ])
-  | And (m, n) -> Sexp.of_variant "and" (sexp_of_vars [ m; n ])
-  | Or (m, n) -> Sexp.of_variant "or" (sexp_of_vars [ m; n ])
-  | Not n -> Sexp.of_variant "not" (sexp_of_vars [ n ])
+let pp_input n fmt =
+  for i = 0 to n - 1 do
+    Format.fprintf fmt "%t@." @@ pp_let (pp_var (In i)) (Format.dprintf "&%d" i)
+  done
 
-let sexp_of_coil : Driver.obliv_array -> Sexp.t =
- fun a ->
-  let ctx =
-    List.mapi
-      (fun i ast -> Sexp.list [ sexp_of_var (Var i); sexp_of_ast ast ])
-      (List.rev !ctx)
+let pp_output a =
+  Format.dprintf "@[<2>[ %a ]@]"
+    (Format.array (Fun.flip pp_var) ~sep:(Format.return ";@ "))
+    (Driver.obliv_array_to_array a)
+
+let pp_bin op m n = Format.dprintf "%t %s %t" (pp_var m) op (pp_var n)
+
+let pp_bexp = function
+  | Eq (m, n) -> pp_bin "==" m n
+  | Lt (m, n) -> pp_bin "<" m n
+
+let pp_aexp = function
+  | Enc n -> Format.dprintf "%d" n
+  | Mux (s, m, n) ->
+      Format.dprintf "@[<hv>if (%t) {@;<1 2>%t@ } else {@;<1 2>%t@ }@]"
+        (pp_bexp s) (pp_var m) (pp_var n)
+  | Add (m, n) -> pp_bin "+" m n
+  | Sub (m, n) -> pp_bin "-" m n
+  | Mul (m, n) -> pp_bin "*" m n
+
+let pp_ctx ctx fmt =
+  let pp (i, e) =
+    Format.fprintf fmt "%t@." @@ pp_let (pp_var (Var i)) (pp_aexp e)
   in
-  let output =
-    Array.to_list (Driver.obliv_array_to_array a) |> sexp_of_vars |> Sexp.list
-  in
-  Sexp.list [ Sexp.atom "let"; Sexp.list ctx; output ]
+  List.iter pp ctx
 
-let print_coil a = Sexp.to_chan stdout (sexp_of_coil a)
+let print_coil a =
+  Format.printf "%t@.%t@.%t@." (pp_input !in_c)
+    (pp_ctx (List.rev !ctx))
+    (pp_output a)
