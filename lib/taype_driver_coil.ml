@@ -114,7 +114,41 @@ let pp_ctx ctx fmt =
   in
   List.iter pp ctx
 
-let print_coil a =
-  Format.printf "%t@.%t@.%t@." (pp_input !in_c)
+let pp_coil a =
+  Format.dprintf "%t@.%t@.%t@." (pp_input !in_c)
     (pp_ctx (List.rev !ctx))
     (pp_output a)
+
+let print_coil a = Format.printf "%t" (pp_coil a)
+let write_coil name a = Format.to_file (name ^ ".pita") "%t" (pp_coil a)
+
+(* TODO: should quote and escape [name]. *)
+let call_coil cmd name =
+  let rc = Sys.command @@ Printf.sprintf "./runcoil %s %s" cmd name in
+  if rc <> 0 then failwith ("external program exited with " ^ string_of_int rc)
+
+let compile_coil name a =
+  write_coil name a;
+  call_coil "compile" name
+
+let execute_coil name ia =
+  let in_file = name ^ ".input" in
+  let write_input oc = Array.iter (Printf.fprintf oc "%d\n") ia in
+  IO.with_out in_file write_input;
+  call_coil "run" name;
+  let out_file = name ^ ".output" in
+  let rec loop ic l =
+    try
+      let n = Scanf.bscanf ic "%d " Fun.id in
+      loop ic (n :: l)
+    with End_of_file -> l
+  in
+  let l =
+    IO.with_in out_file (fun ic -> loop (Scanf.Scanning.from_channel ic) [])
+  in
+  Array.of_list (List.rev l)
+
+let run_coil name l =
+  let ia = List.map Driver.Plaintext.to_array l |> Array.concat in
+  let oa = execute_coil name ia in
+  Driver.Plaintext.of_array oa
