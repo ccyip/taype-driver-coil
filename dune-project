@@ -10,5 +10,6 @@
 
 (package
  (name taype-driver-coil)
+ (depends taype-driver-lib containers)
  (synopsis "COIL driver for the Taype language")
 )
