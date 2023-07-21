@@ -198,9 +198,13 @@ let call_coil cmd name =
   let rc = Sys.command @@ Printf.sprintf "./runcoil %s %S" cmd name in
   if rc <> 0 then failwith ("external program exited with " ^ string_of_int rc)
 
-let compile_coil name a =
+let compile_coil name x output =
+  let (v, a) = x in
   write_coil name a;
+  IO.with_out (name ^ ".view") (output v);
   call_coil "compile" name
+
+let compile_coil_simple name a = compile_coil name ((), a) (fun _ _ -> ())
 
 let execute_coil name ia =
   let in_file = name ^ ".input" in
@@ -219,7 +223,10 @@ let execute_coil name ia =
   in
   Array.of_list (List.rev l)
 
-let run_coil name l =
+let run_coil name l input =
   let ia = List.map Driver.Plaintext.to_array l |> Array.concat in
   let oa = execute_coil name ia in
-  Driver.Plaintext.of_array oa
+  let v = IO.with_in (name ^ ".view") input in
+  (v, Driver.Plaintext.of_array oa)
+
+let run_coil_simple name l = run_coil name l (fun _ -> ()) |> snd
