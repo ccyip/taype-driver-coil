@@ -90,7 +90,7 @@ let pp_output =
   Format.dprintf "@[<2>[ %a ]@]"
     (Format.array (Fun.flip pp_nf) ~sep:(Format.return ";@ "))
 
-let pp_bin op m n = Format.dprintf "%t %s %t" (pp_nf m) op (pp_nf n)
+let pp_bin op m n = Format.dprintf "(%t %s %t)" (pp_nf m) op (pp_nf n)
 
 let pp_bexp = function
   | Eq (m, n) -> pp_bin "==" m n
@@ -99,7 +99,7 @@ let pp_bexp = function
 let pp_aexp = function
   | Const n -> Format.dprintf "%d" n
   | Mux (s, m, n) ->
-      Format.dprintf "@[<hv>if (%t) {@;<1 2>%t@ } else {@;<1 2>%t@ }@]"
+      Format.dprintf "@[<hv>if %t {@;<1 2>%t@ } else {@;<1 2>%t@ }@]"
         (pp_bexp s) (pp_nf m) (pp_nf n)
   | Add (m, n) -> pp_bin "+" m n
   | Sub (m, n) -> pp_bin "-" m n
