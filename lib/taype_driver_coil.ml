@@ -185,21 +185,24 @@ let optimize ctx a =
     (fun (x, _) -> if reachable.(x) then Some (x, tbl.(x)) else None)
     ctx
 
-let pp_coil a =
+let pp_coil ?(optimization = true) a =
   let a = Driver.obliv_array_to_array a in
-  Format.dprintf "%t@.%t@.%t@." (pp_input !in_c)
-    (pp_ctx (optimize (List.rev !ctx) a))
-    (pp_output a)
+  let ctx = List.rev !ctx in
+  let ctx = if optimization then optimize ctx a else ctx in
+  Format.dprintf "%t@.%t@.%t@." (pp_input !in_c) (pp_ctx ctx) (pp_output a)
 
-let print_coil a = Format.printf "%t" (pp_coil a)
-let write_coil name a = Format.to_file (name ^ ".pita") "%t" (pp_coil a)
+let print_coil ?(optimization = true) a =
+  Format.printf "%t" (pp_coil a ~optimization)
+
+let write_coil ?(optimization = true) name a =
+  Format.to_file (name ^ ".pita") "%t" (pp_coil a ~optimization)
 
 let call_coil cmd name =
   let rc = Sys.command @@ Printf.sprintf "./runcoil %s %S" cmd name in
   if rc <> 0 then failwith ("external program exited with " ^ string_of_int rc)
 
 let compile_coil name x output =
-  let (v, a) = x in
+  let v, a = x in
   write_coil name a;
   IO.with_out (name ^ ".view") (output v);
   call_coil "compile" name
