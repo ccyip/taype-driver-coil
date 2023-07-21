@@ -201,13 +201,14 @@ let call_coil cmd name =
   let rc = Sys.command @@ Printf.sprintf "./runcoil %s %S" cmd name in
   if rc <> 0 then failwith ("external program exited with " ^ string_of_int rc)
 
-let compile_coil name x output =
+let compile_coil ?(optimization = true) name x output =
   let v, a = x in
-  write_coil name a;
+  write_coil name a ~optimization;
   IO.with_out (name ^ ".view") (output v);
   call_coil "compile" name
 
-let compile_coil_simple name a = compile_coil name ((), a) (fun _ _ -> ())
+let compile_coil_simple ?(optimization = true) name a =
+  compile_coil name ((), a) (fun _ _ -> ()) ~optimization
 
 let execute_coil name ia =
   let in_file = name ^ ".input" in
