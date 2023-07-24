@@ -5,7 +5,7 @@ type nf = In of int | Var of int | Const of int
 type bexp = Eq of nf * nf | Lt of nf * nf
 
 type aexp =
-  | Const of int
+  | Nf of nf
   | Mux of bexp * nf * nf
   | Add of nf * nf
   | Sub of nf * nf
@@ -30,8 +30,8 @@ let extend_ctx x =
   ctx := (v, x) :: !ctx;
   Var v
 
-let zero : nf = Const 0
-let one : nf = Const 1
+let zero = Const 0
+let one = Const 1
 let ite s m n = Mux (Lt (zero, s), m, n) |> extend_ctx
 
 module OInt = struct
@@ -50,11 +50,11 @@ module OInt = struct
   let report_stat () = raise Unsupported
 
   let make x = function
-    | Party.Public -> Const x |> extend_ctx
+    | Party.Public -> Nf (Const x) |> extend_ctx
     | _ -> raise Unsupported
 
   let arbitrary = function
-    | Party.Public -> Const 0 |> extend_ctx
+    | Party.Public -> Nf (Const 0) |> extend_ctx
     | Party.Trusted -> In (mk_in ())
     | Party.Private _ -> raise Unsupported
 
@@ -97,7 +97,7 @@ let pp_bexp = function
   | Lt (m, n) -> pp_bin "<" m n
 
 let pp_aexp = function
-  | Const n -> Format.dprintf "%d" n
+  | Nf nf -> pp_nf nf
   | Mux (s, m, n) ->
       Format.dprintf "@[<hv>if %t {@;<1 2>%t@ } else {@;<1 2>%t@ }@]"
         (pp_bexp s) (pp_nf m) (pp_nf n)
@@ -112,7 +112,11 @@ let pp_ctx ctx fmt =
   List.iter pp ctx
 
 let nf_inline_const tbl = function
-  | Var x -> (match tbl.(x) with Const n -> Const n | _ -> Var x : nf)
+  | Var x ->
+      let rec trace x =
+        match tbl.(x) with Nf (Var y) -> trace y | Nf nf -> nf | _ -> Var x
+      in
+      trace x
   | nf -> nf
 
 let aexp_inline_const tbl e =
@@ -122,7 +126,7 @@ let aexp_inline_const tbl e =
     | Lt (m, n) -> Lt (go_nf m, go_nf n)
   in
   match e with
-  | Const n -> Const n
+  | Nf nf -> Nf nf
   | Mux (s, m, n) -> Mux (go_bexp s, go_nf m, go_nf n)
   | Add (m, n) -> Add (go_nf m, go_nf n)
   | Sub (m, n) -> Sub (go_nf m, go_nf n)
@@ -130,24 +134,24 @@ let aexp_inline_const tbl e =
 
 let optimize_mux tbl e =
   let bexp_reify = function
-    | Eq (Const m, Var x) -> Some (x, fun n -> m = n)
-    | Eq (Var x, Const n) -> Some (x, fun m -> m = n)
-    | Lt (Const m, Var x) -> Some (x, fun n -> m < n)
-    | Lt (Var x, Const n) -> Some (x, fun m -> m < n)
-    | Eq (_, _) | Lt (_, _) ->
-        (* The smart array implementation should have optimized away the case of
-           two constants. *)
-        None
+    | Eq (Const m, Const n) -> `Zero (m = n)
+    | Eq (Const m, Var x) -> `One (x, fun n -> m = n)
+    | Eq (Var x, Const n) -> `One (x, fun m -> m = n)
+    | Lt (Const m, Const n) -> `Zero (m < n)
+    | Lt (Const m, Var x) -> `One (x, fun n -> m < n)
+    | Lt (Var x, Const n) -> `One (x, fun m -> m < n)
+    | _ -> `Nah
   in
   match e with
   | Mux (s, m, n) -> (
       match bexp_reify s with
-      | Some (x, f) -> (
+      | `Zero b -> Nf (if b then m else n)
+      | `One (x, f) -> (
           match tbl.(x) with
           | Mux (s', Const a, Const b) ->
               Mux (s', (if f a then m else n), if f b then m else n)
           | _ -> e)
-      | None -> e)
+      | `Nah -> e)
   | e -> e
 
 let nf_vars = function Var x -> [ x ] | _ -> []
@@ -157,7 +161,7 @@ let bexp_vars = function
   | Lt (m, n) -> nf_vars m @ nf_vars n
 
 let aexp_vars = function
-  | Const _ -> []
+  | Nf nf -> nf_vars nf
   | Mux (s, m, n) -> bexp_vars s @ nf_vars m @ nf_vars n
   | Add (m, n) -> nf_vars m @ nf_vars n
   | Sub (m, n) -> nf_vars m @ nf_vars n
@@ -176,15 +180,29 @@ let mark tbl reachable =
 
 (* We do not need to do a thorough optimization; just to ease the coil
    optimizer. *)
+(* The output array [a] may be modified. *)
 let optimize ctx a =
-  let tbl = Array.make !var_c (Const 0) in
-  let go (x, e) = tbl.(x) <- optimize_mux tbl (aexp_inline_const tbl e) in
+  let v_tbl = Array.make !var_c (Nf (Const 0)) in
+  let exp_tbl : (aexp, int) Hashtbl.t = Hashtbl.create 1024 in
+  let go (x, e) =
+    let e = optimize_mux v_tbl (aexp_inline_const v_tbl e) in
+    (* Common expression elimination *)
+    let e =
+      match Hashtbl.get exp_tbl e with
+      | Some y -> Nf (Var y)
+      | None ->
+          Hashtbl.add exp_tbl e x;
+          e
+    in
+    v_tbl.(x) <- e
+  in
   List.iter go ctx;
-  Array.map_inplace (nf_inline_const tbl) a;
+  Array.map_inplace (nf_inline_const v_tbl) a;
+  (* Dead code elimination *)
   let reachable = Array.make !var_c false in
-  Array.iter (fun v -> mark tbl reachable (nf_vars v)) a;
+  Array.iter (fun v -> mark v_tbl reachable (nf_vars v)) a;
   List.filter_map
-    (fun (x, _) -> if reachable.(x) then Some (x, tbl.(x)) else None)
+    (fun (x, _) -> if reachable.(x) then Some (x, v_tbl.(x)) else None)
     ctx
 
 let pp_coil ?(optimization = true) a =
