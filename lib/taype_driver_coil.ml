@@ -111,11 +111,12 @@ let pp_ctx ctx fmt =
   in
   List.iter pp ctx
 
-let inline_const tbl e =
-  let go_nf = function
-    | Var x -> (match tbl.(x) with Const n -> Const n | _ -> Var x : nf)
-    | nf -> nf
-  in
+let nf_inline_const tbl = function
+  | Var x -> (match tbl.(x) with Const n -> Const n | _ -> Var x : nf)
+  | nf -> nf
+
+let aexp_inline_const tbl e =
+  let go_nf = nf_inline_const tbl in
   let go_bexp = function
     | Eq (m, n) -> Eq (go_nf m, go_nf n)
     | Lt (m, n) -> Lt (go_nf m, go_nf n)
@@ -177,8 +178,9 @@ let mark tbl reachable =
    optimizer. *)
 let optimize ctx a =
   let tbl = Array.make !var_c (Const 0) in
-  let go (x, e) = tbl.(x) <- optimize_mux tbl (inline_const tbl e) in
+  let go (x, e) = tbl.(x) <- optimize_mux tbl (aexp_inline_const tbl e) in
   List.iter go ctx;
+  Array.map_inplace (nf_inline_const tbl) a;
   let reachable = Array.make !var_c false in
   Array.iter (fun v -> mark tbl reachable (nf_vars v)) a;
   List.filter_map
