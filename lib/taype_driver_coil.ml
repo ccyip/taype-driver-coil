@@ -1,5 +1,6 @@
 open Taype_driver
 open Containers
+open Sexplib
 
 type nf = In of int | Var of int | Const of int
 type bexp = Eq of nf * nf | Lt of nf * nf
@@ -221,14 +222,53 @@ let call_coil cmd name =
   let rc = Sys.command @@ Printf.sprintf "./runcoil %s %S" cmd name in
   if rc <> 0 then failwith ("external program exited with " ^ string_of_int rc)
 
-let compile_coil ?(optimization = true) name x output =
-  let v, a = x in
-  write_coil name a ~optimization;
-  IO.with_out (name ^ ".view") (output v);
-  call_coil "compile" name
+module Ser = struct
+  type 'a t = 'a -> Driver.obliv_array * Sexp.t
 
-let compile_coil_simple ?(optimization = true) name a =
-  compile_coil name ((), a) (fun _ _ -> ()) ~optimization
+  let simple a = (a, Conv.sexp_of_unit ())
+  let int = simple
+  let bool = simple
+
+  let pair t1 t2 (x1, x2) =
+    let a1, s1 = t1 x1 in
+    let a2, s2 = t2 x2 in
+    (Driver.obliv_array_concat a1 a2, Conv.sexp_of_pair Fun.id Fun.id (s1, s2))
+
+  let oadt to_sexp to_size (v, a) =
+    (a, Conv.sexp_of_pair to_sexp Conv.sexp_of_int (v, to_size v))
+end
+
+module Deser = struct
+  type 'a t = Driver.Plaintext.obliv_array -> Sexp.t -> 'a * int
+
+  let simple r a s =
+    let () = Conv.unit_of_sexp s in
+    (r (Driver.Plaintext.obliv_array_slice a 0 1), 1)
+
+  let int = simple Driver.Plaintext.obliv_int_r
+  let bool = simple Driver.Plaintext.obliv_bool_r
+
+  let pair t1 t2 a s =
+    let s1, s2 = Conv.pair_of_sexp Fun.id Fun.id s in
+    let x1, n1 = t1 a s1 in
+    let x2, n2 =
+      t2
+        (Driver.Plaintext.obliv_array_slice a n1
+           (Driver.Plaintext.obliv_array_length a - n1))
+        s2
+    in
+    ((x1, x2), n1 + n2)
+
+  let oadt of_sexp r a s =
+    let v, n = Conv.pair_of_sexp of_sexp Conv.int_of_sexp s in
+    (r (v, Driver.Plaintext.obliv_array_slice a 0 n), n)
+end
+
+let compile_coil ?(optimization = true) name x ser =
+  let a, s = ser x in
+  write_coil name a ~optimization;
+  Sexp.save (name ^ ".view") s;
+  call_coil "compile" name
 
 let execute_coil name ia =
   let in_file = name ^ ".input" in
@@ -247,10 +287,8 @@ let execute_coil name ia =
   in
   Array.of_list (List.rev l)
 
-let run_coil name l input =
+let run_coil name l deser =
   let ia = List.map Driver.Plaintext.to_array l |> Array.concat in
-  let oa = execute_coil name ia in
-  let v = IO.with_in (name ^ ".view") input in
-  (v, Driver.Plaintext.of_array oa)
-
-let run_coil_simple name l = run_coil name l (fun _ -> ()) |> snd
+  let a = execute_coil name ia |> Driver.Plaintext.of_array in
+  let s = Sexp.load_sexp (name ^ ".view") in
+  deser a s |> fst

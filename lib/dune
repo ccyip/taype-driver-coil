@@ -1,4 +1,4 @@
 (library
  (name taype_driver_coil)
  (public_name taype-driver-coil)
- (libraries taype-driver-lib containers))
+ (libraries taype-driver-lib containers sexplib))
