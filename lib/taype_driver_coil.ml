@@ -212,11 +212,11 @@ let pp_coil ?(optimization = true) a =
   let ctx = if optimization then optimize ctx a else ctx in
   Format.dprintf "%t@.%t@.%t@." (pp_input !in_c) (pp_ctx ctx) (pp_output a)
 
-let print_coil ?(optimization = true) a =
-  Format.printf "%t" (pp_coil a ~optimization)
+let print_coil ?optimization a =
+  Format.printf "%t" (pp_coil a ?optimization)
 
-let write_coil ?(optimization = true) name a =
-  Format.to_file (name ^ ".pita") "%t" (pp_coil a ~optimization)
+let write_coil ?optimization name a =
+  Format.to_file (name ^ ".pita") "%t" (pp_coil a ?optimization)
 
 let call_coil cmd name =
   let rc = Sys.command @@ Printf.sprintf "./runcoil %s %S" cmd name in
@@ -264,9 +264,9 @@ module Deser = struct
     (r (v, Driver.Plaintext.obliv_array_slice a 0 n), n)
 end
 
-let compile_coil ?(optimization = true) name x ser =
+let compile_coil ?optimization name x ser =
   let a, s = ser x in
-  write_coil name a ~optimization;
+  write_coil name a ?optimization;
   Sexp.save (name ^ ".view") s;
   call_coil "compile" name
 
